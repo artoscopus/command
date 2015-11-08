@@ -1,268 +1,169 @@
 <?php
 namespace GuzzleHttp\Command;
 
-use GuzzleHttp\ClientInterface;
-use GuzzleHttp\Command\Event\InitEvent;
-use GuzzleHttp\Command\Event\PreparedEvent;
-use GuzzleHttp\Command\Event\ProcessEvent;
+use GuzzleHttp\Client as HttpClient;
+use GuzzleHttp\ClientInterface as HttpClientInterface;
 use GuzzleHttp\Command\Exception\CommandException;
-use GuzzleHttp\Event\EndEvent;
-use GuzzleHttp\Event\HasEmitterTrait;
-use GuzzleHttp\Pool;
-use GuzzleHttp\Ring\Future\FutureInterface;
-use GuzzleHttp\Ring\Future\FutureValue;
-use GuzzleHttp\Event\RequestEvents;
-use GuzzleHttp\Message\RequestInterface;
-use GuzzleHttp\Utils;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Promise;
+use GuzzleHttp\Promise\PromiseInterface;
+use Psr\Http\Message\RequestInterface;
+use Psr\Http\Message\ResponseInterface;
 
 /**
- * Abstract client implementation that provides a basic implementation of
- * several methods. Concrete implementations may choose to extend this class
- * or to completely implement all of the methods of ServiceClientInterface.
+ * Abstract service client implementation.
+ *
+ * Provides a basic implementation of several methods. Concrete implementations
+ * may choose to extend this class or to completely implement all of the methods
+ * of ServiceClientInterface.
  */
 abstract class AbstractClient implements ServiceClientInterface
 {
-    use HasEmitterTrait;
+    /** @var HttpClientInterface HTTP client used to send requests */
+    private $httpClient;
 
-    /** @var ClientInterface HTTP client used to send requests */
-    private $client;
-
-    /** @var array Service client configuration data */
-    private $config;
+    /** @var HandlerStack */
+    private $handlerStack;
 
     /**
-     * The default client constructor is responsible for setting private
-     * properties on the client and accepts an associative array of
-     * configuration parameters:
-     *
-     * - emitter: (internal only) A custom event emitter to use with the client.
-     *
-     * Concrete implementations may choose to support additional configuration
-     * settings as needed.
-     *
-     * @param ClientInterface $client Client used to send HTTP requests
-     * @param array           $config Client configuration options
-     *
-     * @throws \InvalidArgumentException
+     * @param HttpClientInterface $httpClient
+     * @param HandlerStack        $handlerStack
      */
     public function __construct(
-        ClientInterface $client,
-        array $config = []
+        HttpClientInterface $httpClient = null,
+        HandlerStack $handlerStack = null
     ) {
-        $this->client = $client;
-
-        if (isset($config['emitter'])) {
-            $this->emitter = $config['emitter'];
-            unset($config['emitter']);
-        }
-
-        $this->config = $config;
-    }
-
-    public function __call($name, array $arguments)
-    {
-        return $this->execute(
-            $this->getCommand(
-                $name,
-                isset($arguments[0]) ? $arguments[0] : []
-            )
-        );
-    }
-
-    public function execute(CommandInterface $command)
-    {
-        $trans = $this->initTransaction($command);
-
-        if ($trans->result !== null) {
-            return $trans->result;
-        }
-
-        try {
-            $trans->response = $this->client->send($trans->request);
-            return $trans->response instanceof FutureInterface
-                ? $this->createFutureResult($trans)
-                : $trans->result;
-        } catch (CommandException $e) {
-            // Command exceptions are thrown in the command layer, so throw 'em.
-            throw $e;
-        } catch (\Exception $e) {
-            // Handle when a command result is set after a terminal request
-            // error was encountered.
-            if ($trans->result !== null) {
-                return $trans->result;
-            }
-            $trans->exception = $e;
-            throw $this->createCommandException($trans);
-        }
-    }
-
-    public function executeAll($commands, array $options = [])
-    {
-        $this->createPool($commands, $options)->wait();
-    }
-
-    public function createPool($commands, array $options = [])
-    {
-        return new Pool(
-            $this->client,
-            new CommandToRequestIterator(
-                function (CommandInterface $command) {
-                    $trans = $this->initTransaction($command);
-                    return [
-                        'request' => $trans->request,
-                        'result'  => $trans->result
-                    ];
-                },
-                $commands,
-                $options
-            ),
-            isset($options['pool_size']) ? ['pool_size' => $options['pool_size']] : []
-        );
-    }
-
-    public function getHttpClient()
-    {
-        return $this->client;
-    }
-
-    public function getConfig($keyOrPath = null)
-    {
-        if ($keyOrPath === null) {
-            return $this->config;
-        }
-
-        if (strpos($keyOrPath, '/') === false) {
-            return isset($this->config[$keyOrPath])
-                ? $this->config[$keyOrPath]
-                : null;
-        }
-
-        return Utils::getPath($this->config, $keyOrPath);
-    }
-
-    public function createCommandException(CommandTransaction $transaction)
-    {
-        $cn = 'GuzzleHttp\\Command\\Exception\\CommandException';
-
-        // Don't continuously wrap the same exceptions.
-        if ($transaction->exception instanceof CommandException) {
-            return $transaction->exception;
-        }
-
-        if ($transaction->response) {
-            $statusCode = (string) $transaction->response->getStatusCode();
-            if ($statusCode[0] == '4') {
-                $cn = 'GuzzleHttp\\Command\\Exception\\CommandClientException';
-            } elseif ($statusCode[0] == '5') {
-                $cn = 'GuzzleHttp\\Command\\Exception\\CommandServerException';
-            }
-        }
-
-        return new $cn(
-            "Error executing command: " . $transaction->exception->getMessage(),
-            $transaction,
-            $transaction->exception
-        );
-    }
-
-    public function initTransaction(CommandInterface $command)
-    {
-        $trans = new CommandTransaction($this, $command);
-        // Throwing in the init event WILL NOT emit an error event.
-        $command->getEmitter()->emit('init', new InitEvent($trans));
-        $trans->request = $this->serializeRequest($trans);
-
-        if ($future = $command->getFuture()) {
-            $trans->request->getConfig()->set('future', $future);
-        }
-
-        $trans->state = 'prepared';
-        $prep = new PreparedEvent($trans);
-
-        try {
-            $command->getEmitter()->emit('prepared', $prep);
-        } catch (\Exception $e) {
-            $trans->exception = $e;
-            $trans->exception = $this->createCommandException($trans);
-        }
-
-        // If the command failed in the prepare event or was intercepted, then
-        // emit the process event now and skip hooking up the request.
-        if ($trans->exception || $prep->isPropagationStopped()) {
-            $this->emitProcess($trans);
-            return $trans;
-        }
-
-        $trans->state = 'executing';
-
-        // When a request completes, process the request at the command
-        // layer.
-        $trans->request->getEmitter()->on(
-            'end',
-            function (EndEvent $e) use ($trans) {
-                $trans->response = $e->getResponse();
-                if ($trans->exception = $e->getException()) {
-                    $trans->exception = $this->createCommandException($trans);
-                }
-                $this->emitProcess($trans);
-            }, RequestEvents::LATE
-        );
-
-        return $trans;
+        $this->httpClient = $httpClient ?: new HttpClient();
+        $this->handlerStack = $handlerStack ?: new HandlerStack();
+        $this->handlerStack->setHandler($this->createCommandHandler());
     }
 
     /**
-     * Prepares a request for the command.
+     * {@inheritdoc}
+     */
+    public function getHttpClient()
+    {
+        return $this->httpClient;
+    }
+
+    public function getHandlerStack()
+    {
+        return $this->handlerStack;
+    }
+
+    public function getCommand($name, array $params = [])
+    {
+        return new Command($name, $params, clone $this->handlerStack);
+    }
+
+    /**
+     * Creates and executes a command for an operation by name.
      *
-     * @param CommandTransaction $trans Command and context to serialize.
+     * @param string $name Name of the command to execute.
+     * @param array $args Arguments to pass to the getCommand method.
+     *
+     * @return ResultInterface|PromiseInterface
+     * @throws \Exception
+     * @see \GuzzleHttp\Command\ServiceClientInterface::getCommand
+     */
+    public function __call($name, array $args)
+    {
+        $args = isset($args[0]) ? $args[0] : [];
+        if (substr($name, -5) === 'Async') {
+            $command = $this->getCommand(substr($name, 0, -5), $args);
+            return $this->executeAsync($command);
+        } else {
+            return $this->execute($this->getCommand($name, $args));
+        }
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function execute(CommandInterface $command)
+    {
+        return $this->executeAsync($command)->wait();
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function executeAsync(CommandInterface $command)
+    {
+        $stack = $command->getHandlerStack() ?: $this->handlerStack;
+        $handler = $stack->resolve();
+
+        return $handler($command);
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function executeAll($commands, array $options = [])
+    {
+        $this->createPool($commands, $options)->promise()->wait();
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function createPool($commands, array $options = [])
+    {
+        return new CommandPool($this, $commands, $options);
+    }
+
+    /**
+     * Prepares a Request from a Command.
+     *
+     * @param CommandInterface $command
      *
      * @return RequestInterface
      */
-    abstract protected function serializeRequest(CommandTransaction $trans);
+    abstract protected function serializeRequest(CommandInterface $command);
 
     /**
-     * Creates a future result for a given command transaction.
+     * Prepares a Result from a Response.
      *
-     * This method really should beoverridden in subclasses to implement custom
-     * future response results.
+     * @param ResponseInterface $response
      *
-     * @param CommandTransaction $transaction
-     *
-     * @return FutureInterface
+     * @return ResultInterface
      */
-    protected function createFutureResult(CommandTransaction $transaction)
-    {
-        return new FutureValue(
-            $transaction->response->then(function () use ($transaction) {
-                return $transaction->result;
-            }),
-            // Wait function derefs the response which populates the result.
-            [$transaction->response, 'wait'],
-            [$transaction->response, 'cancel']
-        );
-    }
+    abstract protected function unserializeResponse(ResponseInterface $response);
 
     /**
-     * Finishes the process event for the command.
+     * Defines the main handler for commands that uses the HTTP client.
+     *
+     * @return callable
      */
-    private function emitProcess(CommandTransaction $trans)
+    private function createCommandHandler()
     {
-        $trans->state = 'process';
+        return function (CommandInterface $command) {
+            return Promise\coroutine(function () use ($command) {
+                // Get the HTTP options.
+                $opts = $command['@http'] ?: [];
+                unset($command['@http']);
 
-        try {
-            // Emit the final "process" event for the command.
-            $trans->command->getEmitter()->emit('process', new ProcessEvent($trans));
-        } catch (\Exception $ex) {
-            // Override any previous exception with the most recent exception.
-            $trans->exception = $ex;
-            $trans->exception = $this->createCommandException($trans);
-        }
+                try {
+                    // Prepare the request from the command and send it.
+                    $request = $this->serializeRequest($command);
+                    $promise = $this->httpClient->sendAsync($request, $opts);
+                    /** @var ResponseInterface $response */
+                    $response = (yield $promise);
 
-        $trans->state = 'end';
+                    // Create a result from the response, and include some meta
+                    // information about the request/response under the @http key.
+                    $result = $this->unserializeResponse($response);
+                    $result['@http'] = [
+                        'statusCode'   => $response->getStatusCode(),
+                        'effectiveUri' => (string) $request->getUri(),
+                        'headers'      => $response->getHeaders(),
+                    ];
 
-        // If the transaction still has the exception, then throw it.
-        if ($trans->exception) {
-            throw $trans->exception;
-        }
+                    yield $result;
+                } catch (\Exception $e) {
+                    throw CommandException::create($command, $e);
+                }
+            });
+        };
     }
 }
