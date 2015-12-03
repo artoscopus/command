@@ -7,9 +7,9 @@ namespace GuzzleHttp\Command;
 interface ResultInterface extends \ArrayAccess, \IteratorAggregate, \Countable
 {
     /**
-     * Returns the result data from the response as an array.
+     * Returns the result's data as an array.
      *
      * @return array
      */
-    public function toArray();
+    public function getData();
 }

@@ -7,7 +7,7 @@ use GuzzleHttp\HandlerStack;
  * A command object encapsulates the input parameters used to control the
  * creation of a HTTP request and processing of a HTTP response.
  *
- * Using the toArray() method will return the input parameters of the command
+ * Using the getParams() method will return the input parameters of the command
  * as an associative array.
  */
 interface CommandInterface extends \ArrayAccess, \IteratorAggregate, \Countable
@@ -40,5 +40,5 @@ interface CommandInterface extends \ArrayAccess, \IteratorAggregate, \Countable
      *
      * @return array
      */
-    public function toArray();
+    public function getParams();
 }

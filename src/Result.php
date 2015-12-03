@@ -15,4 +15,9 @@ class Result implements ResultInterface
     {
         $this->data = $data;
     }
+
+    public function getData()
+    {
+        return $this->data;
+    }
 }

@@ -26,7 +26,7 @@ class CommandException extends \RuntimeException implements GuzzleException
      * @param \Exception $prev
      * @return CommandException
      */
-    public static function create(CommandInterface $command, \Exception $prev)
+    public static function fromPrevious(CommandInterface $command, \Exception $prev)
     {
         // If the exception is already a command exception, return it.
         if ($prev instanceof self && $command === $prev->getCommand()) {

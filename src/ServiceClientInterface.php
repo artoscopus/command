@@ -18,8 +18,8 @@ interface ServiceClientInterface
      * Implementations SHOULD be able to utilize the following keys or throw
      * an exception if unable.
      *
-     * @param string $name   Name of the operation to use in the command
-     * @param array  $args   Arguments to pass to the command
+     * @param string $name Name of the operation to use in the command
+     * @param array  $args Arguments to pass to the command
      *
      * @return CommandInterface
      * @throws \InvalidArgumentException if no command can be found by name
@@ -46,41 +46,35 @@ interface ServiceClientInterface
     public function executeAsync(CommandInterface $command);
 
     /**
-     * Executes many commands concurrently using a fixed pool size.
-     *
-     * Exceptions encountered while executing the commands will not be thrown.
-     * Instead, callers are expected to handle errors using the event system.
-     *
-     *     $commands = [$client->getCommand('foo', ['baz' => 'bar'])];
-     *     $client->executeAll($commands);
-     *
-     * @param array|\Iterator $commands Array or iterator that contains
-     *     CommandInterface objects to execute.
-     * @param array $options Associative array of options to apply.
-     * @see GuzzleHttp\Command\ServiceClientInterface::createPool for options.
-     */
-    public function executeAll($commands, array $options = []);
-
-    /**
-     * Creates a future object that, when dereferenced, sends commands in
-     * parallel using a fixed pool size.
-     *
-     * Exceptions encountered while executing the commands will not be thrown.
-     * Instead, callers are expected to handle errors using the event system.
+     * Executes multiple commands concurrently using a fixed pool size.
      *
      * @param array|\Iterator $commands Array or iterator that contains
      *     CommandInterface objects to execute with the client.
      * @param array $options Associative array of options to apply.
-     *     - concurrency: (int) Max number of commands to send concurrently.
-     *       When this number of concurrent requests are created, the sendAll
-     *       function blocks until all of the futures have completed.
-     *     - init: (callable) Receives an InitEvent from each command.
-     *     - prepare: (callable) Receives a PrepareEvent from each command.
-     *     - process: (callable) Receives a ProcessEvent from each command.
+     *     - concurrency: (int) Max number of commands to execute concurrently.
+     *     - fulfilled: (callable) Function to invoke when a command completes.
+     *     - rejected: (callable) Function to invoke when a command fails.
+     *
+     * @return array
+     * @see GuzzleHttp\Command\ServiceClientInterface::createPool for options.
+     */
+    public function batch($commands, array $options = []);
+
+    /**
+     * Executes multiple commands concurrently and asynchronously using a
+     * fixed pool size.
+     *
+     * @param array|\Iterator $commands Array or iterator that contains
+     *     CommandInterface objects to execute with the client.
+     * @param array $options Associative array of options to apply.
+     *     - concurrency: (int) Max number of commands to execute concurrently.
+     *     - fulfilled: (callable) Function to invoke when a command completes.
+     *     - rejected: (callable) Function to invoke when a command fails.
      *
      * @return PromiseInterface
+     * @see GuzzleHttp\Command\ServiceClientInterface::createPool for options.
      */
-    public function createPool($commands, array $options = []);
+    public function batchAsync($commands, array $options = []);
 
     /**
      * Get the HTTP client used to send requests for the web service client

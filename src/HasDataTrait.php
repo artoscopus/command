@@ -13,16 +13,6 @@ trait HasDataTrait
     /** @var array Data stored in the collection. */
     protected $data;
 
-    /**
-     * Retrieves an array representation of the data.
-     *
-     * @return array
-     */
-    public function toArray()
-    {
-        return $this->data;
-    }
-
     public function __toString()
     {
         return print_r($this->data, true);
