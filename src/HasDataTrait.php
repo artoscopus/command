@@ -15,7 +15,12 @@ trait HasDataTrait
 
     public function __toString()
     {
-        return print_r($this->data, true);
+        return print_r($this, true);
+    }
+
+    public function __debugInfo()
+    {
+        return $this->data;
     }
 
     public function offsetExists($offset)
